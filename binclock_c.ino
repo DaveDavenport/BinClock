@@ -51,6 +51,9 @@ byte  second = 0;
 byte ldelay  = 200;
 byte ddelay  = 10;
 
+
+const int temp_pin = 2;
+
 /** ES behavior */
 //#define CALIBRATE
 // Baudrate.. 115200 is to big for int? why this work?
@@ -61,6 +64,7 @@ const unsigned int serial_speed = 115200U;
  */
 void set_out(byte index);
 void disable_leds();
+void display_temperature();
 
 /**
  * Remapping table, so we can hook up led in any order direction.
@@ -164,6 +168,8 @@ void setup()
 
     // Disable all leds
     disable_leds();
+    
+    pinMode(temp_pin, INPUT_PULLUP);
 }
 
 /**
@@ -370,7 +376,9 @@ void loop()
         for(iter=ldelay;iter;iter--);
 
     }
-
+    if(digitalRead(temp_pin) == LOW) {
+       display_temperature(); 
+    }
     if(Serial.available()){
         handle_uart_commands();
     }
