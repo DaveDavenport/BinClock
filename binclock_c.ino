@@ -54,6 +54,9 @@ byte ddelay  = 10;
 
 const int temp_pin = 2;
 
+// Bitmask with messages.
+byte messages = 0;
+
 /** ES behavior */
 //#define CALIBRATE
 // Baudrate.. 115200 is to big for int? why this work?
@@ -65,6 +68,7 @@ const unsigned int serial_speed = 115200U;
 void set_out(byte index);
 void disable_leds();
 void display_temperature();
+void leds_pwm(byte on, byte a);
 
 /**
  * Remapping table, so we can hook up led in any order direction.
@@ -80,28 +84,19 @@ byte remap[16] = {
 };
 
 /**
- * Set the bit in the bitvector according to:
- * [hour:3][minutes:6][seconds:6]
- */
-inline void ld_out(byte index)
-{
-    set_out(remap[index]);
-}
-
-/**
  * Set all pins to floating.
  * This is done by setting them as input and with no pull-up resistor.
  */
 void disable_leds()
 {
     // Set pin 6 & 12 to input
-    DDRD=DDRD&0x3F;
+    DDRD=DDRD&0xFF3F;
     // Disable pull-ups
-    PORTD=PORTD&0x3F;
+    PORTD=PORTD&0xFF3F;
     // set 8,9,10,11 as input
-    DDRB=DDRB&0x0F;
+    DDRB=DDRB&0x0F00;
     // Disable pull-ups
-    PORTB=PORTB&0x0F;
+    PORTB=PORTB&0x0F00;
 }
 
 /**
@@ -112,18 +107,283 @@ void leds_test()
     disable_leds();
     byte i = 0;
     do {
-        disable_leds();
-        ld_out(i);
-        delay(200);
+        for(volatile byte u =0; u < 255;u++){
+            leds_pwm(1,i);
+            leds_pwm(0,i);
+            leds_pwm(0,i);
+            leds_pwm(0,i);
+        }
         i++;
     }while(i < 16);
 
     do {
-        disable_leds();
-        ld_out(i-1);
+        for(volatile byte u =0; u < 255;u++){
+            leds_pwm(1,i-1);
+            leds_pwm(0,i-1);
+            leds_pwm(0,i-1);
+            leds_pwm(0,i-1);
+        }
         i--;
-        delay(125);
     }while(i >  0);
+}
+
+
+
+/**
+ * Enable LED t.
+ * REMEMBER that all leds should be off, before calling this.
+ * Or in the same ban & subbank.
+ */
+void set_out(byte t)
+{
+    byte index = (t&6);
+    index = index>>1;
+    index+=4;
+
+    // Bank select. Top bottom
+    if((t&8) >0) {
+        // Normal or Inverse subbank
+        if((t&1)==0) {
+            PORTD=PORTD|(0x0040);
+        } // Else 0 , already is 0
+        // Enable Bank 1 as output
+        DDRD|=0x0040;
+    }
+    else {
+        // Normal or Inverse subbank
+        if((t&1)==0) {
+            PORTD=PORTD|(0x0080);
+        } // Else 0 , already is 0
+        // Bank 2 as output
+        DDRD|=0x0080;
+    }
+
+    // Make column either high or low, depending on normal/inverse bank
+    if((t&1) != 0) {
+        PORTB|=((1<<index));
+    } // Else 0 , already is 0
+    // Set the right column as output
+    DDRB|=(1<<index);
+
+}
+
+void leds_pwm(byte on, byte a)
+{
+    volatile byte iter;
+    disable_leds();
+    for(iter=ddelay;iter; iter--);
+    if(on) {
+        set_out(remap[a]);
+    }
+    for(iter=ldelay;iter; iter--);
+}
+
+void nightrider(byte l)
+{
+    disable_leds();
+    do {
+        for(byte a = 0; a < 4; a++) {
+            for(volatile int u = 0; u < 255;u++) {
+                leds_pwm(1,a);
+                leds_pwm(0,a);
+                leds_pwm(0,a);
+                leds_pwm(0,a);
+            }
+        }
+        for(byte a = 4; a ; a--) {
+            for(volatile int u = 0; u < 255;u++) {
+                leds_pwm(1,a-1);
+                leds_pwm(0,a);
+                leds_pwm(0,a);
+                leds_pwm(0,a);
+            }
+        }
+    }while(--l);
+}
+/**
+ * Sample temperature
+ * Display it.
+ */
+void display_temperature()
+{
+    volatile byte iter;
+    disable_leds();
+    // Request temperature
+    sensors.setWaitForConversion(false);  // makes it async
+    sensors.requestTemperatures();
+    // Disable LEDs
+
+
+    nightrider(3);
+
+    sensors.setWaitForConversion(true);  // makes it async
+    // Show temp.
+    float value = sensors.getTempCByIndex(0);
+    Serial.println(value);
+    byte temp = value;
+    byte ltemp = value*10;
+    ltemp%=10;
+    for(int l = 0; l < 2600 ; l++) {
+        for(byte a= 0; a < 4; a++) {
+            leds_pwm(1,a);
+        }
+        for(byte a= 0; a < 6; a++) {
+            byte index = (1<<a);
+            leds_pwm(temp&index, a+4);
+        }
+        for(byte a= 0; a < 6; a++) {
+            byte index = (1<<a);
+            leds_pwm(ltemp&index, a+10);
+        }
+    }
+}
+
+void handle_uart_commands()
+{
+    byte t = Serial.read();
+    if ( t == 'l' ) {
+        while(!Serial.available());
+        byte v = Serial.read();
+        v %= 128;
+        ddelay = v;
+        ldelay = 128-v;
+    } else if ( t == 't' ) {
+        display_temperature();
+    } else if ( t == 'x' ) {
+        leds_test();
+    }
+    else if ( t == 'a' ) {
+        for(int l = 0; l < 20000;l++) {
+            for(byte a= 0; a < 16;a++) {
+                leds_pwm(1,a);
+            }
+        }
+        disable_leds();
+    }
+    else if ( t == 'm' ) {
+        while(!Serial.available());
+        byte v = Serial.read();
+        if(v == 0) {
+            Serial.println(messages);
+        }
+        if (v > 0 && v < 7) {
+            byte index = (1<<(v-1));
+            if(messages&index) {
+                messages &= ~index;
+            }else{
+                messages |= index;
+            }
+        }
+
+    }
+    else if (t == 's')
+    {
+        // Processes left to right.
+
+        // Read 1st digit of hour
+        while(!Serial.available());
+        t = Serial.read();
+        hour = (t-'0')*10;
+        // Read 2nd digit of hour
+        while(!Serial.available());
+        t = Serial.read();
+        hour += (t-'0');
+        // Read 1st digit minutes
+        while(!Serial.available());
+        t = Serial.read();
+        minute = (t-'0')*10;
+        // Read 2nd digit minutes
+        while(!Serial.available());
+        t = Serial.read();
+        minute += (t-'0');
+
+        // Read 1st digit seconds
+        while(!Serial.available());
+        t = Serial.read();
+        second = (t-'0')*10;
+        // Read 2nd digit seconds
+        while(!Serial.available());
+        t = Serial.read();
+        second += (t-'0');
+    }
+    while(Serial.available()) Serial.read();
+}
+
+/** 
+ * Show messages
+ */
+void show_messages()
+{
+    for ( byte a = 0; a < 6; a++) {
+        byte index = (1<<a);
+        leds_pwm(messages&index, a+4);
+    }
+    leds_pwm(1,10); 
+    leds_pwm(1,11); 
+    leds_pwm(1,12); 
+    leds_pwm(1,13); 
+    leds_pwm(1,14); 
+    leds_pwm(1,15); 
+}
+
+void loop()
+{
+    volatile byte iter;
+
+    if(messages && (second%10) == 4) {
+        show_messages();
+        return;
+    }
+
+    // Hour
+    for(byte a= 0; a < 4; a++) {
+        byte index = 1 << a;
+        leds_pwm(hour&index, a);
+    }
+    //Minutes
+    for(byte a= 0; a < 6; a++) {
+        byte index = 1 << a;
+        leds_pwm(minute&index, a+4);
+    }
+    //Seconds
+    for(byte a= 0; a < 6; a++) {
+        byte index = 1 << a;
+        leds_pwm(second&index,a+10);
+
+    }
+    if(digitalRead(temp_pin) == LOW) {
+       display_temperature(); 
+    }
+    if(Serial.available()){
+        handle_uart_commands();
+    }
+
+}
+
+/**
+ * Timer interrupt routine
+ *
+ * Seconds: 0-59
+ * Minutes: 0-59
+ * Hour:    1-12
+ */
+void timerIsr()
+{
+    second++;
+
+    if(second > 59 )
+    {
+        second=0;
+        minute++;
+        if(minute > 59) {
+            hour++;
+            minute=0;
+
+            if(hour > 12) {
+                hour = 1;
+            }
+        }
+    }
 }
 
 
@@ -171,243 +431,3 @@ void setup()
     
     pinMode(temp_pin, INPUT_PULLUP);
 }
-
-/**
- * Enable LED t.
- * REMEMBER that all leds should be off, before calling this.
- * Or in the same ban & subbank.
- */
-void set_out(byte t)
-{
-    byte index = (t&6);
-    index = index>>1;
-    index+=4;
-
-    // Bank select. Top bottom
-    if((t&8) >0) {
-        // Enable Bank 1 as output
-        DDRD|=0x0040;
-        // Normal or Inverse subbank
-        if((t&1)==0) {
-            PORTD=PORTD|(0x0040);
-        }
-        else {
-            PORTD=PORTD&~(0x0040);
-        }
-    }
-    else {
-        // Bank 2 as output
-        DDRD|=0x0080;
-        // Normal or Inverse subbank
-        if((t&1)==0) {
-            PORTD=PORTD|(0x0080);
-        }
-        else {
-            PORTD=PORTD&~(0x0080);
-        }
-    }
-
-    // Set the right column as output
-    DDRB|=(1<<index);
-    // Make column either high or low, depending on normal/inverse bank
-    if((t&1) == 0) {
-        PORTB&=(~(1<<index));
-    }
-    else{
-        PORTB|=((1<<index));
-    }
-
-}
-void nightrider(byte l)
-{
-    volatile byte iter;
-    disable_leds();
-    do {
-        for(byte a = 0; a < 4; a++) {
-            ld_out(a);
-            delay(100);
-            disable_leds();
-        }
-        for(byte a = 4; a ; a--) {
-            ld_out(a-1);
-            delay(100);
-            disable_leds();
-        }
-    }while(--l);
-}
-void display_temperature()
-{
-    volatile byte iter;
-    disable_leds();
-    // Request temperature
-    sensors.setWaitForConversion(false);  // makes it async
-    sensors.requestTemperatures();
-    // Disable LEDs
-
-
-    nightrider(2);
-
-    sensors.setWaitForConversion(true);  // makes it async
-    // Show temp.
-    float value = sensors.getTempCByIndex(0);
-    Serial.println(value);
-    byte temp = value;
-    byte ltemp = value*10;
-    ltemp%=10;
-    for(int l = 0; l < 2600 ; l++) {
-        for(byte a= 0; a < 4; a++) {
-            disable_leds();
-            for(iter=ddelay;iter; iter--);
-            ld_out(a);
-            for(iter=ldelay;iter; iter--);
-        }
-
-        for(byte a= 0; a < 6; a++) {
-            disable_leds();
-            for(iter=ddelay;iter; iter--);
-            byte index = 1 << a;
-            if(temp&index) {
-                ld_out(a+4);
-            }
-            for(iter=ldelay;iter; iter--);
-        }
-        for(byte a= 0; a < 6; a++) {
-            disable_leds();
-            for(iter=ddelay;iter; iter--);
-            byte index = 1 << a;
-            if(ltemp&index) {
-                ld_out(a+10);
-            }
-            for(iter=ldelay;iter; iter--);
-        }
-    }
-}
-
-void handle_uart_commands()
-{
-    byte t = Serial.read();
-    if ( t == 'l' ) {
-        while(!Serial.available());
-        ldelay = Serial.read();
-    } else if ( t == 'd' ) {
-        while(!Serial.available());
-        ddelay = Serial.read();
-    } else if ( t == 't' ) {
-        display_temperature();
-    } else if ( t == 'x' ) {
-        leds_test();
-    }
-    else if ( t == 'a' ) {
-        for(int l = 0; l < 20000;l++) {
-            for(byte a= 0; a < 16;a++) {
-                disable_leds();
-                for(volatile byte iter=ddelay;iter; iter--);
-                ld_out(a);
-                for(volatile byte iter=ldelay;iter; iter--);
-            }
-        }
-        disable_leds();
-    }
-    else if (t == 's')
-    {
-        // Processes left to right.
-
-        // Read 1st digit of hour
-        while(!Serial.available());
-        t = Serial.read();
-        hour = (t-'0')*10;
-        // Read 2nd digit of hour
-        while(!Serial.available());
-        t = Serial.read();
-        hour += (t-'0');
-        // Read 1st digit minutes
-        while(!Serial.available());
-        t = Serial.read();
-        minute = (t-'0')*10;
-        // Read 2nd digit minutes
-        while(!Serial.available());
-        t = Serial.read();
-        minute += (t-'0');
-
-        // Read 1st digit seconds
-        while(!Serial.available());
-        t = Serial.read();
-        second = (t-'0')*10;
-        // Read 2nd digit seconds
-        while(!Serial.available());
-        t = Serial.read();
-        second += (t-'0');
-    }
-    while(Serial.available()) Serial.read();
-}
-
-
-void loop()
-{
-    volatile byte iter;
-    // Hour
-    for(byte a= 0; a < 4; a++) {
-        disable_leds();
-        for(iter=ddelay;iter; iter--);
-        byte index = 1 << a;
-        if(hour&index) {
-            ld_out(a);
-        }
-        for(iter=ldelay;iter; iter--);
-    }
-    //Minutes
-    for(byte a= 0; a < 6; a++) {
-        disable_leds();
-        for(iter=ddelay;iter; iter--);
-        byte index = 1 << a;
-        if(minute&index) {
-            ld_out(a+4);
-        }
-        for(iter=ldelay;iter;iter--);
-    }
-    //Seconds
-    for(byte a= 0; a < 6; a++) {
-        disable_leds();
-        for(iter=ddelay;iter; iter--);
-        byte index = 1 << a;
-        if(second&index) {
-            ld_out(a+10);
-        }
-        for(iter=ldelay;iter;iter--);
-
-    }
-    if(digitalRead(temp_pin) == LOW) {
-       display_temperature(); 
-    }
-    if(Serial.available()){
-        handle_uart_commands();
-    }
-
-}
-
-/**
- * Timer interrupt routine
- *
- * Seconds: 0-59
- * Minutes: 0-59
- * Hour:    1-12
- */
-void timerIsr()
-{
-    second++;
-
-    if(second > 59 )
-    {
-        second=0;
-        minute++;
-        if(minute > 59) {
-            hour++;
-            minute=0;
-
-            if(hour > 12) {
-                hour = 1;
-            }
-        }
-    }
-}
-
