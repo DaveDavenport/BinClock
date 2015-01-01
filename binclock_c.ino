@@ -70,6 +70,64 @@ void disable_leds();
 void display_temperature();
 void leds_pwm(byte on, byte a);
 
+
+#define NUM_ALARMS 8
+
+byte alarm_enable             = 0x00;
+byte alarm_acknowledge        = 0x00;
+byte alarm_hour[NUM_ALARMS]   = { 11, 23, 23, 23, 23, 23, 23, 23 };
+byte alarm_minute[NUM_ALARMS] = { 10,  0,  0,  0,  0,  0,  0,  0 };
+
+/**
+ * Returns 1 if an alarm is active.
+ * An alarm is active for 1 minute.
+ */
+byte alarm_active()
+{
+    for(byte i = 0; i < NUM_ALARMS; i++) {
+        byte index = (1 << i);
+        if( (alarm_enable&index) > 0 && (alarm_acknowledge&index) == 0 ) {
+            if(alarm_hour[i] == hour ) {
+                if ( alarm_minute[i] == minute ) {
+                    return 1;
+                }
+            }
+        }
+    }
+    return 0;
+}
+/**
+ * Reset Acknowledgments 
+ */
+void alarm_ack_reset()
+{
+    alarm_acknowledge = 0x00;
+}
+
+void alarm_ack()
+{
+    byte retv = 0;
+    for(byte i = 0; i < NUM_ALARMS; i++) {
+        byte index = (1 << i);
+        if( alarm_enable&(1<<i) && (alarm_acknowledge&index) == 0 ) {
+            if(alarm_hour[i] == hour ) {
+                if ( alarm_minute[i] == minute ) {
+                    alarm_acknowledge |= index;
+                }
+            }
+        }
+    }
+}
+
+inline void buzzer_set (bool a)
+{
+    if(a) {
+        PORTD |= (1<<4);
+    }else{
+        PORTD &= (~(1<<4));
+    }
+}
+
 /**
  * Remapping table, so we can hook up led in any order direction.
  * It is easier to do this in software.
@@ -219,7 +277,6 @@ void display_temperature()
     sensors.setWaitForConversion(true);  // makes it async
     // Show temp.
     float value = sensors.getTempCByIndex(0);
-    Serial.println(value);
     byte temp = value;
     byte ltemp = value*10;
     ltemp%=10;
@@ -237,6 +294,106 @@ void display_temperature()
         }
     }
 }
+/**
+ * Handle UART
+ */
+void handle_uart_commands_read_alarm()
+{
+    while(!Serial.available());
+    byte alarm = Serial.read();
+    alarm -= '0';
+    if(alarm >= NUM_ALARMS) {
+        Serial.println("Invalid alarm number");
+        return;
+    }
+
+    while(!Serial.available());
+    byte c = Serial.read();
+    // Write alarm time.
+    if( c == 'w' ) {
+        // Read 1st digit of hour
+        while(!Serial.available());
+        byte t = Serial.read();
+        alarm_hour[alarm] = (t-'0')*10;
+        // Read 2nd digit of hour
+        while(!Serial.available());
+        t = Serial.read();
+        alarm_hour[alarm] += (t-'0');
+        // The -1 offset
+        alarm_hour[alarm] -= 1; 
+
+        // Read 1st digit of minute
+        while(!Serial.available());
+        t = Serial.read();
+        alarm_minute[alarm] = (t-'0')*10;
+        // Read 2nd digit of minute
+        while(!Serial.available());
+        t = Serial.read();
+        alarm_minute[alarm] += (t-'0');
+    } else if ( c == 'r' ) {
+        Serial.write(alarm_hour[alarm]+1);
+        Serial.write(alarm_minute[alarm]);
+        if((alarm_enable&(1<<alarm)) > 0 ) {
+            Serial.write((uint8_t)1);
+        }else {
+            Serial.write((uint8_t)0);
+        }
+        if((alarm_acknowledge&(1<<alarm)) > 0 ) {
+            Serial.write((uint8_t)1);
+        }else {
+            Serial.write((uint8_t)0);
+        }
+
+    } else if ( c == 'e' ) {
+        alarm_enable |= (1<<alarm);
+    } else if ( c == 'd' ) {
+        alarm_enable &= (~(1<<alarm));
+    }
+}
+
+void handle_uart_command_time()
+{
+    while(!Serial.available());
+    byte c = Serial.read();
+
+    if ( c == 'w' ) {
+        // Processes left to right.
+        // Read 1st digit of hour
+        while(!Serial.available());
+        byte t = Serial.read();
+        hour = (t-'0')*10;
+        // Read 2nd digit of hour
+        while(!Serial.available());
+        t = Serial.read();
+        hour += (t-'0');
+        // Substract 1.
+        hour -= 1;
+        // Read 1st digit minutes
+        while(!Serial.available());
+        t = Serial.read();
+        minute = (t-'0')*10;
+        // Read 2nd digit minutes
+        while(!Serial.available());
+        t = Serial.read();
+        minute += (t-'0');
+
+        // Read 1st digit seconds
+        while(!Serial.available());
+        t = Serial.read();
+        second = (t-'0')*10;
+        // Read 2nd digit seconds
+        while(!Serial.available());
+        t = Serial.read();
+        second += (t-'0');
+    } 
+    // Read
+    else if ( c == 'r' ) 
+    {
+        Serial.write(hour+1);
+        Serial.write(minute);
+        Serial.write(second);
+    }
+}
 
 void handle_uart_commands()
 {
@@ -247,6 +404,8 @@ void handle_uart_commands()
         v %= 128;
         ddelay = v;
         ldelay = 128-v;
+    } else if ( t == 'a' ) {
+        handle_uart_commands_read_alarm();
     } else if ( t == 't' ) {
         display_temperature();
     } else if ( t == 'x' ) {
@@ -278,35 +437,9 @@ void handle_uart_commands()
     }
     else if (t == 's')
     {
-        // Processes left to right.
-
-        // Read 1st digit of hour
-        while(!Serial.available());
-        t = Serial.read();
-        hour = (t-'0')*10;
-        // Read 2nd digit of hour
-        while(!Serial.available());
-        t = Serial.read();
-        hour += (t-'0');
-        // Read 1st digit minutes
-        while(!Serial.available());
-        t = Serial.read();
-        minute = (t-'0')*10;
-        // Read 2nd digit minutes
-        while(!Serial.available());
-        t = Serial.read();
-        minute += (t-'0');
-
-        // Read 1st digit seconds
-        while(!Serial.available());
-        t = Serial.read();
-        second = (t-'0')*10;
-        // Read 2nd digit seconds
-        while(!Serial.available());
-        t = Serial.read();
-        second += (t-'0');
+        handle_uart_command_time();
     }
-    while(Serial.available()) Serial.read();
+    //while(Serial.available()) Serial.read();
 }
 
 /** 
@@ -330,32 +463,53 @@ void loop()
 {
     volatile byte iter;
 
+    /**
+     * If button pushed, display pressed.
+     */
+    if(digitalRead(temp_pin) == LOW) {
+        // Acknowledge an alarm, if it is active now.
+        alarm_ack();
+        display_temperature();
+    }
+
+    /**
+     * Handle input.
+     */
+    if(Serial.available()){
+        handle_uart_commands();
+    }
+
+    if((PIND&1) == 1) {
+        disable_leds();
+        if((second&15) == 0){
+            set_out(remap[3]);
+            for( volatile int j = 0; j < 10;j++);
+            disable_leds();
+        }
+        for( volatile int j = 0; j < 10000;j++);
+        return;
+    }
+
     if(messages && (second%10) == 4) {
         show_messages();
         return;
     }
 
-    // Hour
+    // Hour, we display 12 hour time. (1 - 12)
+    byte hour12 = ( hour % 12 ) + 1;
     for(byte a= 0; a < 4; a++) {
         byte index = 1 << a;
-        leds_pwm(hour&index, a);
+        leds_pwm(hour12&index, a);
     }
-    //Minutes
+    //Minutes (0 - 59)
     for(byte a= 0; a < 6; a++) {
         byte index = 1 << a;
         leds_pwm(minute&index, a+4);
     }
-    //Seconds
+    //Seconds (0 - 59)
     for(byte a= 0; a < 6; a++) {
         byte index = 1 << a;
         leds_pwm(second&index,a+10);
-
-    }
-    if(digitalRead(temp_pin) == LOW) {
-       display_temperature(); 
-    }
-    if(Serial.available()){
-        handle_uart_commands();
     }
 
 }
@@ -379,9 +533,21 @@ void timerIsr()
             hour++;
             minute=0;
 
-            if(hour > 12) {
-                hour = 1;
+            if(hour > 23) {
+                hour = 0;
+                // Reset acknowledgments
+                alarm_ack_reset();
             }
+        }
+
+    }
+    /**
+     * Alarm
+     */
+    buzzer_set(0); 
+    if(alarm_active()) {
+        if((second&1) == 0) {
+            buzzer_set(1); 
         }
     }
 }
@@ -413,6 +579,14 @@ void setup()
         }
     }
 #endif
+    // Set pin 3 as input, pullup. 
+    DDRD  &= (~1);
+    PORTD |= 1;
+
+    // Set pin 4 as output.
+    DDRD  |= (1<<4);
+    // Disable it
+    PORTD &= ~(1<<4);
     /**
      * 1 second timers.
      */
