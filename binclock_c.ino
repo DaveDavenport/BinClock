@@ -32,7 +32,8 @@
 
 // Temperature
 const int one_wire_ping = 13;
-// Setup a oneWire instance to communicate with any OneWire devices (not just Maxim/Dallas temperature ICs)
+// Setup a oneWire instance to communicate with any OneWire devices (not just Maxim/Dallas
+// temperature ICs)
 OneWire oneWire ( one_wire_ping );
 
 // Pass our oneWire reference to Dallas Temperature.
@@ -51,7 +52,7 @@ byte second = 0;
 byte ldelay = 200;
 byte ddelay = 10;
 
-
+// Pin that attaches the DS18s20
 const int temp_pin = 2;
 
 // Bitmask with messages.
@@ -71,12 +72,39 @@ void display_temperature ();
 void leds_pwm ( byte on, byte a );
 
 
-#define NUM_ALARMS    8
+/**
+ * Alarm defines
+ */
+const byte NUM_ALARMS = 8;
 
-byte alarm_enable           = 0x00;
-byte alarm_acknowledge      = 0x00;
-byte alarm_hour[NUM_ALARMS] = { 11, 23, 23, 23, 23, 23, 23, 23 };
-byte alarm_minute[NUM_ALARMS] = { 10, 0, 0, 0, 0, 0, 0, 0 };
+byte       alarm_enable           = 0x00;
+byte       alarm_acknowledge      = 0x00;
+byte       alarm_hour[NUM_ALARMS] = { 11, 23, 23, 23, 23, 23, 23, 23 };
+byte       alarm_minute[NUM_ALARMS] = { 10, 0, 0, 0, 0, 0, 0, 0 };
+
+
+/******************************************************************
+ *                              HELPER                            *
+ ******************************************************************/
+
+/**
+ * Blocking read.
+ */
+inline byte uart_read()
+{
+    while ( !Serial.available () ) {
+        ;
+    }
+    return Serial.read ();
+}
+
+
+
+/******************************************************************
+ *                              ALARM                             *
+ ******************************************************************/
+
+
 
 /**
  * Returns 1 if an alarm is active.
@@ -106,7 +134,6 @@ void alarm_ack_reset ()
 
 void alarm_ack ()
 {
-    byte retv = 0;
     for ( byte i = 0; i < NUM_ALARMS; i++ ) {
         byte index = ( 1 << i );
         if ( alarm_enable & ( 1 << i ) && ( alarm_acknowledge & index ) == 0 ) {
@@ -128,6 +155,13 @@ inline void buzzer_set ( bool a )
         PORTD &= ( ~( 1 << 4 ) );
     }
 }
+
+
+
+/******************************************************************
+ *                              DISPLAYER                         *
+ ******************************************************************/
+
 
 /**
  * Remapping table, so we can hook up led in any order direction.
@@ -268,7 +302,6 @@ void nightrider ( byte l )
  */
 void display_temperature ()
 {
-    volatile byte iter;
     disable_leds ();
     // Request temperature
     sensors.setWaitForConversion ( false );  // makes it async
@@ -298,55 +331,59 @@ void display_temperature ()
         }
     }
 }
+
+
+/******************************************************************
+ *                              UART                              *
+ ******************************************************************/
+
+/**
+ * General protocol description.
+ * 
+ * * [command:<8>][subcommand:<8>][values:<variable>]
+ */
+
 /**
  * Handle UART
  */
 void handle_uart_commands_read_alarm ()
 {
-    while ( !Serial.available () ) {
-        ;
+    // Read command.
+    byte c = uart_read(); 
+
+    // Num alarms
+    if ( c == 'n' ) {
+         Serial.write ( NUM_ALARMS );
+         return;
     }
-    byte alarm = Serial.read ();
+
+    // Read alarm.
+    byte alarm = uart_read(); 
     alarm -= '0';
     if ( alarm >= NUM_ALARMS ) {
         Serial.println ( "Invalid alarm number" );
         return;
     }
 
-    while ( !Serial.available () ) {
-        ;
-    }
-    byte c = Serial.read ();
     // Write alarm time.
     if ( c == 'w' ) {
         // Read 1st digit of hour
-        while ( !Serial.available () ) {
-            ;
-        }
-        byte t = Serial.read ();
+        byte t = uart_read(); 
         alarm_hour[alarm] = ( t - '0' ) * 10;
         // Read 2nd digit of hour
-        while ( !Serial.available () ) {
-            ;
-        }
-        t                  = Serial.read ();
+        t                  = uart_read(); 
         alarm_hour[alarm] += ( t - '0' );
         // The -1 offset
         alarm_hour[alarm] -= 1;
 
         // Read 1st digit of minute
-        while ( !Serial.available () ) {
-            ;
-        }
-        t                   = Serial.read ();
+        t                   = uart_read(); 
         alarm_minute[alarm] = ( t - '0' ) * 10;
         // Read 2nd digit of minute
-        while ( !Serial.available () ) {
-            ;
-        }
-        t                    = Serial.read ();
+        t                    = uart_read(); 
         alarm_minute[alarm] += ( t - '0' );
     }
+    // Read alarm time
     else if ( c == 'r' ) {
         Serial.write ( alarm_hour[alarm] + 1 );
         Serial.write ( alarm_minute[alarm] );
@@ -363,20 +400,20 @@ void handle_uart_commands_read_alarm ()
             Serial.write ( (uint8_t) 0 );
         }
     }
+    // Enable alarm
     else if ( c == 'e' ) {
         alarm_enable |= ( 1 << alarm );
     }
+    // Disable alarm
     else if ( c == 'd' ) {
         alarm_enable &= ( ~( 1 << alarm ) );
     }
+
 }
 
-void handle_uart_command_time ()
+void handle_uart_commands_time ()
 {
-    while ( !Serial.available () ) {
-        ;
-    }
-    byte c = Serial.read ();
+    byte c = uart_read(); 
 
     if ( c == 'w' ) {
         // Processes left to right.
@@ -428,17 +465,71 @@ void handle_uart_command_time ()
     }
 }
 
-void handle_uart_commands ()
+/**
+ * Set brightness.
+ * Between 0 - 128
+ */
+void handle_uart_commands_brightness ()
 {
-    byte t = Serial.read ();
-    if ( t == 'l' ) {
-        while ( !Serial.available () ) {
-            ;
-        }
+    byte c = uart_read();
+    // Write the brightness
+    if ( c == 'w' ) {
         byte v = Serial.read ();
         v     %= 128;
         ddelay = v;
         ldelay = 128 - v;
+    }
+    // Read the brightness
+    else if ( c == 'r' ) {
+        Serial.write ( ddelay );
+    }
+}
+
+/**
+ * Set message.
+ */
+void handle_uart_commands_messages ()
+{
+    byte c = uart_read();
+    if( c == 'w' ) {
+        // Number.
+        byte v = uart_read(); 
+        // Enable/Disable
+        byte e = ((uart_read() == 'e')? 1:0);
+        if ( v > 0 && v < 7 ) {
+            byte index = ( 1 << ( v - 1 ) );
+            if ( e ) {
+                messages |= index;
+            }
+            else{
+                messages &= ~index;
+            }
+        }
+    }
+    else if (  c == 'r' ) {
+        byte v = uart_read();
+        if ( v > 0 && v < 7 ) {
+            byte index = ( 1 << ( v - 1 ) );
+            Serial.write ( ((messages & index)  > 0) ? 1 : 0 );
+        }
+    }
+}
+
+/**
+ * Handle protocol
+ *
+ * * 'b' - Brightness.
+ * * 'a' - Alarms.
+ * * 't' - Temperature.
+ * * 'm' - Set message.
+ * * 'x' - Led tests.
+ * * 's' - Set/Read time.
+ */
+void handle_uart_commands ()
+{
+    byte t = Serial.read ();
+    if ( t == 'b' ) {
+        handle_uart_commands_brightness ();
     }
     else if ( t == 'a' ) {
         handle_uart_commands_read_alarm ();
@@ -449,36 +540,12 @@ void handle_uart_commands ()
     else if ( t == 'x' ) {
         leds_test ();
     }
-    else if ( t == 'a' ) {
-        for ( int l = 0; l < 20000; l++ ) {
-            for ( byte a = 0; a < 16; a++ ) {
-                leds_pwm ( 1, a );
-            }
-        }
-        disable_leds ();
-    }
     else if ( t == 'm' ) {
-        while ( !Serial.available () ) {
-            ;
-        }
-        byte v = Serial.read ();
-        if ( v == 0 ) {
-            Serial.println ( messages );
-        }
-        if ( v > 0 && v < 7 ) {
-            byte index = ( 1 << ( v - 1 ) );
-            if ( messages & index ) {
-                messages &= ~index;
-            }
-            else{
-                messages |= index;
-            }
-        }
+        handle_uart_commands_messages();
     }
     else if ( t == 's' ) {
-        handle_uart_command_time ();
+        handle_uart_commands_time ();
     }
-    //while(Serial.available()) Serial.read();
 }
 
 /**
@@ -498,46 +565,11 @@ void show_messages ()
     leds_pwm ( 1, 15 );
 }
 
-void loop ()
+/**
+ * Show time.
+ */
+inline void handle_show_time ()
 {
-    volatile byte iter;
-
-    /**
-     * If button pushed, display pressed.
-     */
-    if ( digitalRead ( temp_pin ) == LOW ) {
-        // Acknowledge an alarm, if it is active now.
-        alarm_ack ();
-        display_temperature ();
-    }
-
-    /**
-     * Handle input.
-     */
-    if ( Serial.available () ) {
-        handle_uart_commands ();
-    }
-
-    if ( ( PIND & 1 ) == 1 ) {
-        disable_leds ();
-        if ( ( second & 15 ) == 0 ) {
-            set_out ( remap[3] );
-            for ( volatile int j = 0; j < 10; j++ ) {
-                ;
-            }
-            disable_leds ();
-        }
-        for ( volatile int j = 0; j < 10000; j++ ) {
-            ;
-        }
-        return;
-    }
-
-    if ( messages && ( second % 10 ) == 4 ) {
-        show_messages ();
-        return;
-    }
-
     // Hour, we display 12 hour time. (1 - 12)
     byte hour12 = ( hour % 12 ) + 1;
     for ( byte a = 0; a < 4; a++ ) {
@@ -554,6 +586,61 @@ void loop ()
         byte index = 1 << a;
         leds_pwm ( second & index, a + 10 );
     }
+    // disable the leds again.
+    leds_pwm ( 0, 0 );
+}
+
+void loop ()
+{
+    /**
+     * If button pushed, display pressed.
+     */
+    if ( digitalRead ( temp_pin ) == LOW ) {
+        // Acknowledge an alarm, if it is active now.
+        alarm_ack ();
+        // Show temperature.
+        display_temperature ();
+        return;
+    }
+
+    /**
+     * Handle input.
+     */
+    if ( Serial.available () ) {
+        handle_uart_commands ();
+    }
+
+    /**
+     * Display disable switch.
+     */
+    if ( ( PIND & 1 ) == 1 ) {
+        disable_leds ();
+        // Once every 5 seconds, pulse.
+        if ( ( second & 15 ) == 0 ) {
+            set_out ( remap[3] );
+            for ( volatile int j = 0; j < 10; j++ ) {
+                ;
+            }
+            disable_leds ();
+            for ( volatile int j = 0; j < 10000; j++ ) {
+                ;
+            }
+        }
+        return;
+    }
+
+    /**
+     * Show message.
+     */
+    if ( messages && ( second % 10 ) == 4 ) {
+        show_messages ();
+        return;
+    }
+
+    /**
+     * In the end, show time.
+     */
+    handle_show_time ();
 }
 
 /**
