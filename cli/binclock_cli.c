@@ -134,6 +134,12 @@ void handle_temperature ( )
     write(fd, buffer, 1);
 }
 
+void handle_test( )
+{
+    char buffer[] = {'x'};
+    write(fd, buffer, 1);
+}
+
 void handle_alarm ( int argc, char **argv)
 {
     if(argc == 0 ) {
@@ -242,6 +248,8 @@ int main ( int argc, char **argv )
         }
         else if ( strcasecmp(command, "brightness") == 0) {
             handle_brightness(argc-2, &argv[2]);
+        } else if ( strcasecmp(command, "test") == 0){
+            handle_test();
         }
 
     }
